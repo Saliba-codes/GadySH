@@ -1,23 +1,12 @@
-# Byte-compiled / cache files
 __pycache__/
 *.py[cod]
 *.pyo
-
-# Virtual environments
 venv/
 .env/
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# VS Code settings
 .vscode/
-
-# Logs
 *.log
-
-# Python packaging
 *.egg
 *.egg-info/
 dist/
