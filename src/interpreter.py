@@ -76,8 +76,61 @@ class Interpreter:
     def __init__(self) -> None:
         self.globals = Environment()
         self.env = self.globals
+        self.module_cache: dict[str, Value] = {}
+        self.loading_modules: set[str] = set()
+        self._filename_stack: list[str] = []
         self._install_intrinsics()
-        self._install_std_from_file()
+        # Load std from stdlib/std.gs
+        std_value = self._import_module("stdlib/std.gs")
+        self.globals.define("std", std_value, None)
+
+
+    def _import_module(self, raw_path: str) -> Value:
+        # Resolve relative to current executing file if possible, else cwd
+        base = None
+        cur = self._current_filename()
+        if cur is not None and cur != "<stdin>":
+            base = Path(cur).resolve().parent
+        else:
+            base = Path.cwd()
+
+        module_path = (base / raw_path).resolve()
+        key = str(module_path)
+
+        # cache hit
+        if key in self.module_cache:
+            return self.module_cache[key]
+
+        # circular import guard
+        if key in self.loading_modules:
+            raise RuntimeError_(f"Circular import detected: {module_path}")
+
+        if not module_path.exists():
+            raise RuntimeError_(f"Import file not found: {module_path}")
+
+        from src.lexer import Lexer
+        from src.parser import Parser
+
+        source = module_path.read_text(encoding="utf-8")
+        tokens = Lexer(source, filename=key).tokenize()
+        program = Parser(tokens, filename=key).parse_program()
+
+        self.loading_modules.add(key)
+        try:
+            # Run in isolated env to avoid polluting globals
+            previous_env = self.env
+            self.env = Environment(parent=self.globals)
+            try:
+                result = self.run_with_filename(program, key)
+            finally:
+                self.env = previous_env
+
+            # store in cache
+            self.module_cache[key] = result
+            return result
+        finally:
+            self.loading_modules.remove(key)
+
 
     def _base_type(self, type_name: str) -> str:
         # "List[Int]" -> "List"
@@ -125,9 +178,73 @@ class Interpreter:
                 return IntValue(len(v.items))
             raise RuntimeError_("__intrinsic_len expects String, List, or Map")
 
+        def _intr_str(args):
+            return StringValue(args[0].display())
+
+        def _intr_int(args):
+            v = args[0]
+            if isinstance(v, IntValue):
+                return v
+            if isinstance(v, FloatValue):
+                # explicit conversion allowed
+                return IntValue(int(v.value))
+            if isinstance(v, StringValue):
+                s = v.value.strip()
+                try:
+                    return IntValue(int(s))
+                except ValueError:
+                    raise RuntimeError_(f"std.int: cannot convert '{v.value}' to Int")
+            raise RuntimeError_(f"std.int: cannot convert {v.type_name()} to Int")
+
+        def _intr_float(args):
+            v = args[0]
+            if isinstance(v, FloatValue):
+                return v
+            if isinstance(v, IntValue):
+                return FloatValue(float(v.value))
+            if isinstance(v, StringValue):
+                s = v.value.strip()
+                try:
+                    return FloatValue(float(s))
+                except ValueError:
+                    raise RuntimeError_(f"std.float: cannot convert '{v.value}' to Float")
+            raise RuntimeError_(f"std.float: cannot convert {v.type_name()} to Float")
+
+        def _intr_map_has(args):
+            m, key = args[0], args[1]
+            if not isinstance(m, MapValue):
+                raise RuntimeError_("std.has: first argument must be Map")
+            return BoolValue(m.has(key))  # see note below
+
+        def _intr_map_keys(args):
+            m = args[0]
+            if not isinstance(m, MapValue):
+                raise RuntimeError_("std.keys: argument must be Map")
+            # values are (orig_key, value)
+            keys = [orig_key for (orig_key, _val) in m.items.values()]
+            return ListValue(keys)
+
+
+        def _intr_map_values(args):
+            m = args[0]
+            if not isinstance(m, MapValue):
+                raise RuntimeError_("std.values: argument must be Map")
+            vals = [_val for (_orig_key, _val) in m.items.values()]
+            return ListValue(vals)
+
+
         self.globals.define("__intrinsic_print", NativeFunctionValue("__intrinsic_print", 1, _intr_print), None)
         self.globals.define("__intrinsic_typeof", NativeFunctionValue("__intrinsic_typeof", 1, _intr_typeof), None)
         self.globals.define("__intrinsic_len", NativeFunctionValue("__intrinsic_len", 1, _intr_len), None)
+
+        self.globals.define("__intrinsic_str", NativeFunctionValue("__intrinsic_str", 1, _intr_str), None)
+        self.globals.define("__intrinsic_int", NativeFunctionValue("__intrinsic_int", 1, _intr_int), None)
+        self.globals.define("__intrinsic_float", NativeFunctionValue("__intrinsic_float", 1, _intr_float), None)
+
+        self.globals.define("__intrinsic_map_has", NativeFunctionValue("__intrinsic_map_has", 2, _intr_map_has), None)
+        self.globals.define("__intrinsic_map_keys", NativeFunctionValue("__intrinsic_map_keys", 1, _intr_map_keys), None)
+        self.globals.define("__intrinsic_map_values", NativeFunctionValue("__intrinsic_map_values", 1, _intr_map_values), None)
+
 
 
     def _install_std_from_file(self) -> None:
@@ -154,6 +271,13 @@ class Interpreter:
     # -------------------------
     # Program / statements
     # -------------------------
+    def run_with_filename(self, program: list[ast.Stmt], filename: str) -> Value:
+        self._push_filename(filename)
+        try:
+            return self.run(program)
+        finally:
+            self._pop_filename()
+
     def run(self, program: list[ast.Stmt]) -> Value:
         last: Value = NULL
         for stmt in program:
@@ -223,6 +347,9 @@ class Interpreter:
     # Expressions
     # -------------------------
     def eval_expr(self, node: ast.Expr) -> Value:
+        if isinstance(node, ast.ImportExpr):
+            return self._import_module(node.path)
+        
         if isinstance(node, ast.IntLiteral):
             return IntValue(node.value)
 
@@ -311,6 +438,15 @@ class Interpreter:
     # -------------------------
     # Helpers
     # -------------------------
+    def _push_filename(self, filename: str) -> None:
+        self._filename_stack.append(filename)
+
+    def _pop_filename(self) -> None:
+        self._filename_stack.pop()
+
+    def _current_filename(self) -> str | None:
+        return self._filename_stack[-1] if self._filename_stack else None
+
     def _is_truthy(self, v: Value) -> bool:
         # user-chosen rule: only false and null are falsey
         if isinstance(v, NullValue):

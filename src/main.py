@@ -39,7 +39,8 @@ def main() -> int:
                 print(stmt)
             return 0
 
-        result = Interpreter().run(program)
+        interp = Interpreter()
+        result = interp.run_with_filename(program, filename)
         print(result.display())  # host output, not language print
         return 0
 

@@ -91,6 +91,10 @@ class FunctionExpr(Expr):
     body: Block
 
 @dataclass
+class ImportExpr(Expr):
+    path: str
+
+@dataclass
 class ListLiteral(Expr):
     elements: List[Expr]
 

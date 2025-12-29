@@ -57,6 +57,7 @@ class TokenType(Enum):
     STRING = auto()
 
     # keywords
+    IMPORT = auto()
     LET = auto()
     FN = auto()
     RETURN = auto()
@@ -80,6 +81,7 @@ KEYWORDS: dict[str, TokenType] = {
     "true": TokenType.TRUE,
     "false": TokenType.FALSE,
     "null": TokenType.NULL,
+    "import": TokenType.IMPORT,
 }
 
 

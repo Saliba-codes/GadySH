@@ -331,8 +331,12 @@ class Parser:
             return ast.BoolLiteral(False)
         if self.match(TokenType.NULL):
             return ast.NullLiteral()
+        
+        if self.match(TokenType.IMPORT):
+            path_tok = self.expect(TokenType.STRING, "Expected string after 'import'.")
+            return ast.ImportExpr(path=path_tok.value)        
 
-                # function expression (anonymous)
+        # function expression (anonymous)
         if self.match(TokenType.FN):
             self.expect(TokenType.LPAREN, "Expected '(' after 'fn'.")
             params: list[tuple[str, Optional[str]]] = []
