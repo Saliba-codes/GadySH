@@ -288,6 +288,12 @@ class Parser:
         expr = self.parse_primary()
 
         while True:
+            # attribute access: obj.name
+            if self.match(TokenType.DOT):
+                name_tok = self.expect(TokenType.IDENT, "Expected identifier after '.'.")
+                expr = ast.GetAttrExpr(expr, name_tok.value)
+                continue  # <-- CRITICAL
+
             # function call: (args?)
             if self.match(TokenType.LPAREN):
                 args: list[ast.Expr] = []
@@ -311,6 +317,7 @@ class Parser:
 
         return expr
 
+
     def parse_primary(self) -> ast.Expr:
         if self.match(TokenType.INT):
             return ast.IntLiteral(self.previous().value)
@@ -324,6 +331,32 @@ class Parser:
             return ast.BoolLiteral(False)
         if self.match(TokenType.NULL):
             return ast.NullLiteral()
+
+                # function expression (anonymous)
+        if self.match(TokenType.FN):
+            self.expect(TokenType.LPAREN, "Expected '(' after 'fn'.")
+            params: list[tuple[str, Optional[str]]] = []
+
+            if not self.check(TokenType.RPAREN):
+                while True:
+                    p_name = self.expect(TokenType.IDENT, "Expected parameter name.").value
+                    p_type: Optional[str] = None
+                    if self.match(TokenType.COLON):
+                        p_type = self.parse_type_name()
+                    params.append((p_name, p_type))
+                    if not self.match(TokenType.COMMA):
+                        break
+
+            self.expect(TokenType.RPAREN, "Expected ')' after parameters.")
+
+            return_type: Optional[str] = None
+            if self.match(TokenType.COLON):
+                return_type = self.parse_type_name()
+
+            self.expect(TokenType.LBRACE, "Expected '{' before function body.")
+            body = self.parse_block_opened()
+
+            return ast.FunctionExpr(params=params, return_type=return_type, body=body)
 
         if self.match(TokenType.IDENT):
             return ast.Identifier(self.previous().value)

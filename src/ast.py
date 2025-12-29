@@ -79,6 +79,16 @@ class IndexExpr(Expr):
     obj: Expr
     index: Expr
 
+@dataclass
+class GetAttrExpr(Expr):
+    obj: Expr
+    name: str
+
+@dataclass
+class FunctionExpr(Expr):
+    params: list[tuple[str, str | None]]
+    return_type: str | None
+    body: Block
 
 @dataclass
 class ListLiteral(Expr):

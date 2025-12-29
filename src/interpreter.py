@@ -1,15 +1,16 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 import src.ast as ast
 from src.runtime.errors import RuntimeError_, TypeError_
 from src.runtime.values import (
     Value, NULL, TRUE, FALSE,
     NullValue, BoolValue, IntValue, FloatValue, StringValue,
     ListValue, MapValue,
+    NativeFunctionValue
 )
-
+from pathlib import Path
+from src.lexer import Lexer
+from src.parser import Parser
 
 @dataclass
 class Environment:
@@ -65,9 +66,18 @@ class FunctionValue(Value):
 
 
 class Interpreter:
+    def _get_attr(self, obj: Value, name: str) -> Value:
+        # Map attribute access
+        if isinstance(obj, MapValue):
+            return obj.get(StringValue(name))
+
+        raise RuntimeError_(f"Object of type {obj.type_name()} has no attribute '{name}'")
+    
     def __init__(self) -> None:
         self.globals = Environment()
         self.env = self.globals
+        self._install_intrinsics()
+        self._install_std_from_file()
 
     def _base_type(self, type_name: str) -> str:
         # "List[Int]" -> "List"
@@ -96,6 +106,50 @@ class Interpreter:
 
         if got != exp_base:
             raise TypeError_(f"TypeError: {where}: Expected {expected}, got {got}")
+
+    def _install_intrinsics(self) -> None:
+        def _intr_print(args):
+            print(args[0].display())
+            return NULL
+
+        def _intr_typeof(args):
+            return StringValue(args[0].type_name())
+
+        def _intr_len(args):
+            v = args[0]
+            if isinstance(v, StringValue):
+                return IntValue(len(v.value))
+            if isinstance(v, ListValue):
+                return IntValue(len(v.elements))
+            if isinstance(v, MapValue):
+                return IntValue(len(v.items))
+            raise RuntimeError_("__intrinsic_len expects String, List, or Map")
+
+        self.globals.define("__intrinsic_print", NativeFunctionValue("__intrinsic_print", 1, _intr_print), None)
+        self.globals.define("__intrinsic_typeof", NativeFunctionValue("__intrinsic_typeof", 1, _intr_typeof), None)
+        self.globals.define("__intrinsic_len", NativeFunctionValue("__intrinsic_len", 1, _intr_len), None)
+
+
+    def _install_std_from_file(self) -> None:
+        # Resolve stdlib path relative to repo root
+        # (src/interpreter.py -> src -> repo root)
+        repo_root = Path(__file__).resolve().parents[1]
+        std_path = repo_root / "stdlib" / "std.gs"
+
+        if not std_path.exists():
+            raise RuntimeError_(f"Missing stdlib file: {std_path}")
+
+        source = std_path.read_text(encoding="utf-8")
+        tokens = Lexer(source, filename=str(std_path)).tokenize()
+        program = Parser(tokens, filename=str(std_path)).parse_program()
+
+        # Run stdlib in the *same interpreter instance* so it can use intrinsics
+        result = self.run(program)
+
+        if not isinstance(result, MapValue):
+            raise RuntimeError_("stdlib/std.gs must evaluate to a Map (the std module).")
+
+        self.globals.define("std", result, None)
 
     # -------------------------
     # Program / statements
@@ -238,6 +292,19 @@ class Interpreter:
             callee = self.eval_expr(node.callee)
             args = [self.eval_expr(a) for a in node.args]
             return self._call(callee, args)
+        
+        if isinstance(node, ast.GetAttrExpr):
+            obj = self.eval_expr(node.obj)
+            return self._get_attr(obj, node.name)
+        
+        if isinstance(node, ast.FunctionExpr):
+            return FunctionValue(
+                name="<anon>",
+                params=node.params,
+                return_type=node.return_type,
+                body=node.body,
+                closure=self.env,
+            )        
 
         raise RuntimeError_(f"Unknown expression node: {type(node).__name__}")
 
@@ -405,6 +472,7 @@ class Interpreter:
         raise RuntimeError_("Invalid assignment target")
 
     def _call(self, callee: Value, args: list[Value]) -> Value:
+        # user-defined functions
         if isinstance(callee, FunctionValue):
             if len(args) != len(callee.params):
                 raise RuntimeError_(f"{callee.name} expects {len(callee.params)} args, got {len(args)}")
@@ -427,4 +495,37 @@ class Interpreter:
             finally:
                 self.env = previous
 
+        # native (intrinsic) functions
+        if isinstance(callee, NativeFunctionValue):
+            if callee.arity is not None and len(args) != callee.arity:
+                raise RuntimeError_(f"{callee.name} expects {callee.arity} args, got {len(args)}")
+            return callee.impl(args)
         raise RuntimeError_("Can only call functions (fn) in v0.1")
+    
+    def _install_std(self) -> None:
+        std = MapValue()
+
+        def _print(args):
+            v = args[0]
+            print(v.display())
+            return NULL
+
+        def _typeof(args):
+            return StringValue(args[0].type_name())
+
+        def _len(args):
+            v = args[0]
+            if isinstance(v, StringValue):
+                return IntValue(len(v.value))
+            if isinstance(v, ListValue):
+                return IntValue(len(v.elements))
+            if isinstance(v, MapValue):
+                return IntValue(len(v.items))
+            raise RuntimeError_("std.len expects String, List, or Map")
+
+        std.set(StringValue("print"), NativeFunctionValue("print", 1, _print))
+        std.set(StringValue("typeof"), NativeFunctionValue("typeof", 1, _typeof))
+        std.set(StringValue("len"), NativeFunctionValue("len", 1, _len))
+
+        self.globals.define("std", std, None)
+

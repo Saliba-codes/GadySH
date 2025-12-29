@@ -125,6 +125,14 @@ class MapValue(Value):
             parts.append(f"{orig_key.display()}: {val.display()}")
         return "{ " + ", ".join(parts) + " }"
 
+@dataclass
+class NativeFunctionValue(Value):
+    name: str
+    arity: int | None  # None = variadic
+    impl: callable     # Python callable
+
+    def display(self) -> str:
+        return f"<native fn {self.name}>"
 
 # handy singletons
 NULL = NullValue()
